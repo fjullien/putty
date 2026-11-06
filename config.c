@@ -150,21 +150,10 @@ void conf_editbox_handler(dlgcontrol *ctrl, dlgparam *dlg,
             dlg_editbox_set(ctrl, dlg, str);
         } else if (event == EVENT_VALCHANGE) {
             char *str = dlg_editbox_get(ctrl, dlg);
-            if (type->type == EDIT_INT && key == CONF_savelines) {
-                char *end;
-                long value;
-
-                /* atoi can wrap an out-of-range value to a negative one. */
-                errno = 0;
-                value = strtol(str, &end, 10);
-                conf_set_int(conf, key,
-                             end == str || *end || errno == ERANGE ||
-                             value < 0 || value > INT_MAX ? 0 : (int)value);
-            } else if (type->type == EDIT_INT) {
+            if (type->type == EDIT_INT)
                 conf_set_int(conf, key, atoi(str));
-            } else {
+            else
                 conf_set_int(conf, key, (int)(type->denominator * atof(str)));
-            }
             sfree(str);
         }
     }
@@ -798,13 +787,63 @@ struct sessionsaver_data {
     struct sesslist sesslist;
     bool midsession;
     char *savedsession;     /* the current contents of ssd->editbox */
+    char *invalid_scrollback; /* keep text across panel refreshes */
 };
+
+static void scrollback_handler(dlgcontrol *ctrl, dlgparam *dlg,
+                               void *data, int event)
+{
+    Conf *conf = (Conf *)data;
+    struct sessionsaver_data *ssd =
+        (struct sessionsaver_data *)ctrl->context.p;
+
+    if (event == EVENT_REFRESH) {
+        char *str = ssd->invalid_scrollback ?
+            dupstr(ssd->invalid_scrollback) :
+            dupprintf("%d", conf_get_int(conf, CONF_savelines));
+        dlg_editbox_set(ctrl, dlg, str);
+        sfree(str);
+    } else if (event == EVENT_VALCHANGE) {
+        char *str = dlg_editbox_get(ctrl, dlg);
+        char *end;
+        long value;
+
+        errno = 0;
+        value = strtol(str, &end, 10);
+        if (end != str && !*end && errno != ERANGE &&
+            value >= 0 && value <= INT_MAX) {
+            sfree(ssd->invalid_scrollback);
+            ssd->invalid_scrollback = NULL;
+            conf_set_int(conf, CONF_savelines, (int)value);
+            sfree(str);
+        } else {
+            sfree(ssd->invalid_scrollback);
+            ssd->invalid_scrollback = str;
+        }
+    }
+}
+
+static bool scrollback_lines_valid(struct sessionsaver_data *ssd,
+                                   dlgparam *dlg, Conf *conf)
+{
+    if (!ssd->invalid_scrollback &&
+        conf_get_int(conf, CONF_savelines) >= 0)
+        return true;
+
+    char *errmsg = dupprintf(
+        "Lines of scrollback in Window settings must be between 0 and %d.",
+        INT_MAX);
+    dlg_error_msg(dlg, errmsg);
+    sfree(errmsg);
+    return false;
+}
 
 static void sessionsaver_data_free(void *ssdv)
 {
     struct sessionsaver_data *ssd = (struct sessionsaver_data *)ssdv;
     get_sesslist(&ssd->sesslist, false);
     sfree(ssd->savedsession);
+    sfree(ssd->invalid_scrollback);
     sfree(ssd);
 }
 
@@ -825,6 +864,8 @@ static bool load_selected_session(
     }
     isdef = !strcmp(ssd->sesslist.sessions[i], "Default Settings");
     load_settings(ssd->sesslist.sessions[i], conf);
+    sfree(ssd->invalid_scrollback);
+    ssd->invalid_scrollback = NULL;
     sfree(ssd->savedsession);
     ssd->savedsession = dupstr(isdef ? "" : ssd->sesslist.sessions[i]);
     if (maybe_launch)
@@ -888,10 +929,13 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
              * contains a hostname.
              */
             if (load_selected_session(ssd, dlg, conf, &mbl) &&
-                (mbl && ctrl == ssd->listbox && conf_launchable(conf))) {
+                mbl && ctrl == ssd->listbox && conf_launchable(conf) &&
+                scrollback_lines_valid(ssd, dlg, conf)) {
                 dlg_end(dlg, 1);       /* it's all over, and succeeded */
             }
         } else if (ctrl == ssd->savebutton) {
+            if (!scrollback_lines_valid(ssd, dlg, conf))
+                return;
             bool isdef = !strcmp(ssd->savedsession, "Default Settings");
             if (!ssd->savedsession[0]) {
                 int i = dlg_listbox_index(ssd->listbox, dlg);
@@ -928,8 +972,8 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             }
         } else if (ctrl == ssd->okbutton) {
             if (ssd->midsession) {
-                /* In a mid-session Change Settings, Apply is always OK. */
-                dlg_end(dlg, 1);
+                if (scrollback_lines_valid(ssd, dlg, conf))
+                    dlg_end(dlg, 1);
                 return;
             }
             /*
@@ -950,10 +994,13 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
                 }
                 /* If at this point we have a valid session, go! */
                 if (mbl && conf_launchable(conf2)) {
-                    conf_copy_into(conf, conf2);
-                    dlg_end(dlg, 1);
-                } else
+                    if (scrollback_lines_valid(ssd, dlg, conf2)) {
+                        conf_copy_into(conf, conf2);
+                        dlg_end(dlg, 1);
+                    }
+                } else {
                     dlg_beep(dlg);
+                }
 
                 conf_free(conf2);
                 return;
@@ -964,9 +1011,11 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
              * session, get going.
              */
             if (conf_launchable(conf)) {
-                dlg_end(dlg, 1);
-            } else
+                if (scrollback_lines_valid(ssd, dlg, conf))
+                    dlg_end(dlg, 1);
+            } else {
                 dlg_beep(dlg);
+            }
         } else if (ctrl == ssd->cancelbutton) {
             dlg_end(dlg, 0);
         }
@@ -2246,7 +2295,7 @@ void setup_config_box(struct controlbox *b, bool midsession,
                     "Control the scrollback in the window");
     ctrl_editbox(s, "Lines of scrollback", 's', 50,
                  HELPCTX(window_scrollback),
-                 conf_editbox_handler, I(CONF_savelines), ED_INT);
+                 scrollback_handler, P(ssd), P(NULL));
     ctrl_checkbox(s, "Display scrollbar", 'd',
                   HELPCTX(window_scrollback),
                   conf_checkbox_handler, I(CONF_scrollbar));
