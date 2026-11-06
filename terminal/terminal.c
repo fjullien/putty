@@ -2204,6 +2204,9 @@ void term_size(Terminal *term, int newrows, int newcols, int newsavelines)
     int sblen;
     int save_alt_which = term->alt_which;
 
+    /* A malformed setting must not make the scrollback limit negative. */
+    if (newsavelines < 0) newsavelines = 0;
+
     if (newrows == term->rows && newcols == term->cols &&
         newsavelines == term->savelines)
         return;                        /* nothing to do */

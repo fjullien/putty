@@ -4,6 +4,8 @@
  */
 
 #include <assert.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 
 #include "putty.h"
@@ -148,10 +150,21 @@ void conf_editbox_handler(dlgcontrol *ctrl, dlgparam *dlg,
             dlg_editbox_set(ctrl, dlg, str);
         } else if (event == EVENT_VALCHANGE) {
             char *str = dlg_editbox_get(ctrl, dlg);
-            if (type->type == EDIT_INT)
+            if (type->type == EDIT_INT && key == CONF_savelines) {
+                char *end;
+                long value;
+
+                /* atoi can wrap an out-of-range value to a negative one. */
+                errno = 0;
+                value = strtol(str, &end, 10);
+                conf_set_int(conf, key,
+                             end == str || *end || errno == ERANGE ||
+                             value < 0 || value > INT_MAX ? 0 : (int)value);
+            } else if (type->type == EDIT_INT) {
                 conf_set_int(conf, key, atoi(str));
-            else
+            } else {
                 conf_set_int(conf, key, (int)(type->denominator * atof(str)));
+            }
             sfree(str);
         }
     }

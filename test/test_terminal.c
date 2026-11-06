@@ -691,6 +691,14 @@ static void test_selection(Mock *mk)
     IEQUAL(mk->paste_tc[4].bg.enabled, false);
 }
 
+static void test_negative_scrollback(Mock *mk)
+{
+    reset(mk);
+    term_size(mk->term, 24, 80, 5);
+    term_size(mk->term, 24, 80, -1);
+    IEQUAL(mk->term->savelines, 0);
+}
+
 int main(void)
 {
     Mock *mk = mock_new();
@@ -707,6 +715,7 @@ int main(void)
     }
     mk->ldisc = ldisc_create(mk->conf, mk->term, mk->backend, &mk->seat);
 
+    test_negative_scrollback(mk);
     test_hello_world(mk);
     test_wrap(mk);
     test_nonwrap(mk);
